@@ -1,4 +1,23 @@
 start_server {tags {"pause network"}} {
+    test "Test check paused_actions in info stats" {
+        assert_equal [s paused_actions] "none"
+        assert_equal [s paused_timeout_milliseconds] 0
+
+        r client PAUSE 10000 WRITE
+        assert_equal [s paused_actions] "write"
+        after 1000
+        set timeout [s paused_timeout_milliseconds]
+        assert {$timeout > 0 && $timeout < 9000}
+        r client unpause
+
+        r multi
+        r client PAUSE 1000 ALL
+        r info clients
+        assert_match "*paused_actions:all*" [r exec]
+
+        r client unpause
+    }
+
     test "Test read commands are not blocked by client pause" {
         r client PAUSE 100000 WRITE
         set rd [valkey_deferring_client]
@@ -133,7 +152,7 @@ start_server {tags {"pause network"}} {
         r set x y
         # create a function for later
         r FUNCTION load replace {#!lua name=f1
-            redis.register_function{
+            server.register_function{
                 function_name='f1',
                 callback=function() return "hello" end,
                 flags={'no-writes'}
@@ -258,6 +277,33 @@ start_server {tags {"pause network"}} {
         catch {r set FOO} err
         assert_match "ERR wrong number of arguments for 'set' command" $err
         r client unpause
+    }
+
+    test "Test eviction is skipped during client pause" {
+        r flushall
+        set evicted_keys [s 0 evicted_keys]
+
+        r multi
+        r set foo{t} bar
+        r config set maxmemory-policy allkeys-random
+        r config set maxmemory 1
+        r client PAUSE 50000 WRITE
+        r exec
+
+        # No keys should actually have been evicted.
+        assert_match $evicted_keys [s 0 evicted_keys]
+
+        # The previous config set triggers a time event, but due to the pause,
+        # no eviction has been made. After the unpause, a eviction will happen.
+        r client unpause
+        wait_for_condition 1000 10 {
+            [expr $evicted_keys + 1] eq [s 0 evicted_keys]
+        } else {
+            fail "Key is not evicted"
+        }
+
+        r config set maxmemory 0
+        r config set maxmemory-policy noeviction
     }
 
     test "Test both active and passive expires are skipped during client pause" {

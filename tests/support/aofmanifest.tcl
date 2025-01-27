@@ -1,5 +1,5 @@
-set ::base_aof_sufix ".base"
-set ::incr_aof_sufix ".incr"
+set ::base_aof_suffix ".base"
+set ::incr_aof_suffix ".incr"
 set ::manifest_suffix ".manifest"
 set ::aof_format_suffix ".aof"
 set ::rdb_format_suffix ".rdb"
@@ -12,7 +12,7 @@ proc join_path {dir1 dir2} {
     return [format "%s/%s" $dir1 $dir2]
 }
 
-proc get_redis_dir {} {
+proc get_valkey_dir {} {
     set config [srv config]
     set _ [dict get $config "dir"]
 }
