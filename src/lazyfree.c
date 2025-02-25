@@ -1,19 +1,21 @@
 #include "server.h"
 #include "bio.h"
-#include "atomicvar.h"
 #include "functions.h"
 #include "cluster.h"
+#include "module.h"
 
-static serverAtomic size_t lazyfree_objects = 0;
-static serverAtomic size_t lazyfreed_objects = 0;
+#include <stdatomic.h>
+
+static _Atomic size_t lazyfree_objects = 0;
+static _Atomic size_t lazyfreed_objects = 0;
 
 /* Release objects from the lazyfree thread. It's just decrRefCount()
  * updating the count of objects to release. */
 void lazyfreeFreeObject(void *args[]) {
-    robj *o = (robj *) args[0];
+    robj *o = (robj *)args[0];
     decrRefCount(o);
-    atomicDecr(lazyfree_objects,1);
-    atomicIncr(lazyfreed_objects,1);
+    atomic_fetch_sub_explicit(&lazyfree_objects, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&lazyfreed_objects, 1, memory_order_relaxed);
 }
 
 /* Release a database from the lazyfree thread. The 'db' pointer is the
@@ -26,8 +28,8 @@ void lazyfreeFreeDatabase(void *args[]) {
     size_t numkeys = kvstoreSize(da1);
     kvstoreRelease(da1);
     kvstoreRelease(da2);
-    atomicDecr(lazyfree_objects,numkeys);
-    atomicIncr(lazyfreed_objects,numkeys);
+    atomic_fetch_sub_explicit(&lazyfree_objects, numkeys, memory_order_relaxed);
+    atomic_fetch_add_explicit(&lazyfreed_objects, numkeys, memory_order_relaxed);
 }
 
 /* Release the key tracking table. */
@@ -35,8 +37,8 @@ void lazyFreeTrackingTable(void *args[]) {
     rax *rt = args[0];
     size_t len = rt->numele;
     freeTrackingRadixTree(rt);
-    atomicDecr(lazyfree_objects,len);
-    atomicIncr(lazyfreed_objects,len);
+    atomic_fetch_sub_explicit(&lazyfree_objects, len, memory_order_relaxed);
+    atomic_fetch_add_explicit(&lazyfreed_objects, len, memory_order_relaxed);
 }
 
 /* Release the error stats rax tree. */
@@ -44,19 +46,19 @@ void lazyFreeErrors(void *args[]) {
     rax *errors = args[0];
     size_t len = errors->numele;
     raxFreeWithCallback(errors, zfree);
-    atomicDecr(lazyfree_objects,len);
-    atomicIncr(lazyfreed_objects,len);
+    atomic_fetch_sub_explicit(&lazyfree_objects, len, memory_order_relaxed);
+    atomic_fetch_add_explicit(&lazyfreed_objects, len, memory_order_relaxed);
 }
 
-/* Release the lua_scripts dict. */
-void lazyFreeLuaScripts(void *args[]) {
-    dict *lua_scripts = args[0];
-    list *lua_scripts_lru_list = args[1];
-    lua_State *lua = args[2];
-    long long len = dictSize(lua_scripts);
-    freeLuaScriptsSync(lua_scripts, lua_scripts_lru_list, lua);
-    atomicDecr(lazyfree_objects,len);
-    atomicIncr(lazyfreed_objects,len);
+/* Release the eval scripts data structures. */
+void lazyFreeEvalScripts(void *args[]) {
+    dict *scripts = args[0];
+    list *scripts_lru_list = args[1];
+    list *engine_callbacks = args[2];
+    long long len = dictSize(scripts);
+    freeEvalScripts(scripts, scripts_lru_list, engine_callbacks);
+    atomic_fetch_sub_explicit(&lazyfree_objects, len, memory_order_relaxed);
+    atomic_fetch_add_explicit(&lazyfreed_objects, len, memory_order_relaxed);
 }
 
 /* Release the functions ctx. */
@@ -64,8 +66,8 @@ void lazyFreeFunctionsCtx(void *args[]) {
     functionsLibCtx *functions_lib_ctx = args[0];
     size_t len = functionsLibCtxFunctionsLen(functions_lib_ctx);
     functionsLibCtxFree(functions_lib_ctx);
-    atomicDecr(lazyfree_objects,len);
-    atomicIncr(lazyfreed_objects,len);
+    atomic_fetch_sub_explicit(&lazyfree_objects, len, memory_order_relaxed);
+    atomic_fetch_add_explicit(&lazyfreed_objects, len, memory_order_relaxed);
 }
 
 /* Release replication backlog referencing memory. */
@@ -76,26 +78,24 @@ void lazyFreeReplicationBacklogRefMem(void *args[]) {
     len += raxSize(index);
     listRelease(blocks);
     raxFree(index);
-    atomicDecr(lazyfree_objects,len);
-    atomicIncr(lazyfreed_objects,len);
+    atomic_fetch_sub_explicit(&lazyfree_objects, len, memory_order_relaxed);
+    atomic_fetch_add_explicit(&lazyfreed_objects, len, memory_order_relaxed);
 }
 
 /* Return the number of currently pending objects to free. */
 size_t lazyfreeGetPendingObjectsCount(void) {
-    size_t aux;
-    atomicGet(lazyfree_objects,aux);
+    size_t aux = atomic_load_explicit(&lazyfree_objects, memory_order_relaxed);
     return aux;
 }
 
 /* Return the number of objects that have been freed. */
 size_t lazyfreeGetFreedObjectsCount(void) {
-    size_t aux;
-    atomicGet(lazyfreed_objects,aux);
+    size_t aux = atomic_load_explicit(&lazyfreed_objects, memory_order_relaxed);
     return aux;
 }
 
 void lazyfreeResetStats(void) {
-    atomicSet(lazyfreed_objects,0);
+    atomic_store_explicit(&lazyfreed_objects, 0, memory_order_relaxed);
 }
 
 /* Return the amount of work needed in order to free an object.
@@ -117,15 +117,15 @@ size_t lazyfreeGetFreeEffort(robj *key, robj *obj, int dbid) {
     if (obj->type == OBJ_LIST && obj->encoding == OBJ_ENCODING_QUICKLIST) {
         quicklist *ql = obj->ptr;
         return ql->len;
-    } else if (obj->type == OBJ_SET && obj->encoding == OBJ_ENCODING_HT) {
-        dict *ht = obj->ptr;
-        return dictSize(ht);
-    } else if (obj->type == OBJ_ZSET && obj->encoding == OBJ_ENCODING_SKIPLIST){
+    } else if (obj->type == OBJ_SET && obj->encoding == OBJ_ENCODING_HASHTABLE) {
+        hashtable *ht = obj->ptr;
+        return hashtableSize(ht);
+    } else if (obj->type == OBJ_ZSET && obj->encoding == OBJ_ENCODING_SKIPLIST) {
         zset *zs = obj->ptr;
         return zs->zsl->length;
-    } else if (obj->type == OBJ_HASH && obj->encoding == OBJ_ENCODING_HT) {
-        dict *ht = obj->ptr;
-        return dictSize(ht);
+    } else if (obj->type == OBJ_HASH && obj->encoding == OBJ_ENCODING_HASHTABLE) {
+        hashtable *ht = obj->ptr;
+        return hashtableSize(ht);
     } else if (obj->type == OBJ_STREAM) {
         size_t effort = 0;
         stream *s = obj->ptr;
@@ -140,13 +140,13 @@ size_t lazyfreeGetFreeEffort(robj *key, robj *obj, int dbid) {
         if (s->cgroups && raxSize(s->cgroups)) {
             raxIterator ri;
             streamCG *cg;
-            raxStart(&ri,s->cgroups);
-            raxSeek(&ri,"^",NULL,0);
+            raxStart(&ri, s->cgroups);
+            raxSeek(&ri, "^", NULL, 0);
             /* There must be at least one group so the following should always
              * work. */
             serverAssert(raxNext(&ri));
             cg = ri.data;
-            effort += raxSize(s->cgroups)*(1+raxSize(cg->pel));
+            effort += raxSize(s->cgroups) * (1 + raxSize(cg->pel));
             raxStop(&ri);
         }
         return effort;
@@ -169,14 +169,14 @@ size_t lazyfreeGetFreeEffort(robj *key, robj *obj, int dbid) {
 
 /* Free an object, if the object is huge enough, free it in async way. */
 void freeObjAsync(robj *key, robj *obj, int dbid) {
-    size_t free_effort = lazyfreeGetFreeEffort(key,obj,dbid);
+    size_t free_effort = lazyfreeGetFreeEffort(key, obj, dbid);
     /* Note that if the object is shared, to reclaim it now it is not
      * possible. This rarely happens, however sometimes the implementation
      * of parts of the server core may call incrRefCount() to protect
      * objects, and then call dbDelete(). */
     if (free_effort > LAZYFREE_THRESHOLD && obj->refcount == 1) {
-        atomicIncr(lazyfree_objects,1);
-        bioCreateLazyFreeJob(lazyfreeFreeObject,1,obj);
+        atomic_fetch_add_explicit(&lazyfree_objects, 1, memory_order_relaxed);
+        bioCreateLazyFreeJob(lazyfreeFreeObject, 1, obj);
     } else {
         decrRefCount(obj);
     }
@@ -187,15 +187,15 @@ void freeObjAsync(robj *key, robj *obj, int dbid) {
  * lazy freeing. */
 void emptyDbAsync(serverDb *db) {
     int slot_count_bits = 0;
-    int flags = KVSTORE_ALLOCATE_DICTS_ON_DEMAND;
+    int flags = KVSTORE_ALLOCATE_HASHTABLES_ON_DEMAND;
     if (server.cluster_enabled) {
         slot_count_bits = CLUSTER_SLOT_MASK_BITS;
-        flags |= KVSTORE_FREE_EMPTY_DICTS;
+        flags |= KVSTORE_FREE_EMPTY_HASHTABLES;
     }
     kvstore *oldkeys = db->keys, *oldexpires = db->expires;
-    db->keys = kvstoreCreate(&dbDictType, slot_count_bits, flags);
-    db->expires = kvstoreCreate(&dbExpiresDictType, slot_count_bits, flags);
-    atomicIncr(lazyfree_objects, kvstoreSize(oldkeys));
+    db->keys = kvstoreCreate(&kvstoreKeysHashtableType, slot_count_bits, flags);
+    db->expires = kvstoreCreate(&kvstoreExpiresHashtableType, slot_count_bits, flags);
+    atomic_fetch_add_explicit(&lazyfree_objects, kvstoreSize(oldkeys), memory_order_relaxed);
     bioCreateLazyFreeJob(lazyfreeFreeDatabase, 2, oldkeys, oldexpires);
 }
 
@@ -204,8 +204,8 @@ void emptyDbAsync(serverDb *db) {
 void freeTrackingRadixTreeAsync(rax *tracking) {
     /* Because this rax has only keys and no values so we use numnodes. */
     if (tracking->numnodes > LAZYFREE_THRESHOLD) {
-        atomicIncr(lazyfree_objects,tracking->numele);
-        bioCreateLazyFreeJob(lazyFreeTrackingTable,1,tracking);
+        atomic_fetch_add_explicit(&lazyfree_objects, tracking->numele, memory_order_relaxed);
+        bioCreateLazyFreeJob(lazyFreeTrackingTable, 1, tracking);
     } else {
         freeTrackingRadixTree(tracking);
     }
@@ -216,29 +216,31 @@ void freeTrackingRadixTreeAsync(rax *tracking) {
 void freeErrorsRadixTreeAsync(rax *errors) {
     /* Because this rax has only keys and no values so we use numnodes. */
     if (errors->numnodes > LAZYFREE_THRESHOLD) {
-        atomicIncr(lazyfree_objects,errors->numele);
-        bioCreateLazyFreeJob(lazyFreeErrors,1,errors);
+        atomic_fetch_add_explicit(&lazyfree_objects, errors->numele, memory_order_relaxed);
+        bioCreateLazyFreeJob(lazyFreeErrors, 1, errors);
     } else {
         raxFreeWithCallback(errors, zfree);
     }
 }
 
-/* Free lua_scripts dict and lru list, if the dict is huge enough, free them in async way.
+/* Free scripts dict, and lru list, if the dict is huge enough, free them in
+ * async way.
  * Close lua interpreter, if there are a lot of lua scripts, close it in async way. */
-void freeLuaScriptsAsync(dict *lua_scripts, list *lua_scripts_lru_list, lua_State *lua) {
-    if (dictSize(lua_scripts) > LAZYFREE_THRESHOLD) {
-        atomicIncr(lazyfree_objects,dictSize(lua_scripts));
-        bioCreateLazyFreeJob(lazyFreeLuaScripts,3,lua_scripts,lua_scripts_lru_list,lua);
+void freeEvalScriptsAsync(dict *scripts, list *scripts_lru_list, list *engine_callbacks) {
+    if (dictSize(scripts) > LAZYFREE_THRESHOLD) {
+        atomic_fetch_add_explicit(&lazyfree_objects, dictSize(scripts), memory_order_relaxed);
+        bioCreateLazyFreeJob(lazyFreeEvalScripts, 3, scripts, scripts_lru_list, engine_callbacks);
     } else {
-        freeLuaScriptsSync(lua_scripts, lua_scripts_lru_list, lua);
+        freeEvalScripts(scripts, scripts_lru_list, engine_callbacks);
     }
 }
 
 /* Free functions ctx, if the functions ctx contains enough functions, free it in async way. */
 void freeFunctionsAsync(functionsLibCtx *functions_lib_ctx) {
     if (functionsLibCtxFunctionsLen(functions_lib_ctx) > LAZYFREE_THRESHOLD) {
-        atomicIncr(lazyfree_objects,functionsLibCtxFunctionsLen(functions_lib_ctx));
-        bioCreateLazyFreeJob(lazyFreeFunctionsCtx,1,functions_lib_ctx);
+        atomic_fetch_add_explicit(&lazyfree_objects, functionsLibCtxFunctionsLen(functions_lib_ctx),
+                                  memory_order_relaxed);
+        bioCreateLazyFreeJob(lazyFreeFunctionsCtx, 1, functions_lib_ctx);
     } else {
         functionsLibCtxFree(functions_lib_ctx);
     }
@@ -246,11 +248,9 @@ void freeFunctionsAsync(functionsLibCtx *functions_lib_ctx) {
 
 /* Free replication backlog referencing buffer blocks and rax index. */
 void freeReplicationBacklogRefMemAsync(list *blocks, rax *index) {
-    if (listLength(blocks) > LAZYFREE_THRESHOLD ||
-        raxSize(index) > LAZYFREE_THRESHOLD)
-    {
-        atomicIncr(lazyfree_objects,listLength(blocks)+raxSize(index));
-        bioCreateLazyFreeJob(lazyFreeReplicationBacklogRefMem,2,blocks,index);
+    if (listLength(blocks) > LAZYFREE_THRESHOLD || raxSize(index) > LAZYFREE_THRESHOLD) {
+        atomic_fetch_add_explicit(&lazyfree_objects, listLength(blocks) + raxSize(index), memory_order_relaxed);
+        bioCreateLazyFreeJob(lazyFreeReplicationBacklogRefMem, 2, blocks, index);
     } else {
         listRelease(blocks);
         raxFree(index);

@@ -1,11 +1,12 @@
-This directory contains all Redis dependencies, except for the libc that
+This directory contains all Valkey dependencies, except for the libc that
 should be provided by the operating system.
 
 * **Jemalloc** is our memory allocator, used as replacement for libc malloc on Linux by default. It has good performances and excellent fragmentation behavior. This component is upgraded from time to time.
 * **hiredis** is the official C client library for Redis. It is used by redis-cli, redis-benchmark and Redis Sentinel. It is part of the Redis official ecosystem but is developed externally from the Redis repository, so we just upgrade it as needed.
-* **linenoise** is a readline replacement. It is developed by the same authors of Redis but is managed as a separated project and updated as needed.
+* **linenoise** is a readline replacement. It is developed by the same authors of Valkey but is managed as a separated project and updated as needed.
 * **lua** is Lua 5.1 with minor changes for security and additional libraries.
 * **hdr_histogram** Used for per-command latency tracking histograms.
+* **fast_float** is a replacement for strtod to convert strings to floats efficiently. 
 
 How to upgrade the above dependencies
 ===
@@ -13,10 +14,10 @@ How to upgrade the above dependencies
 Jemalloc
 ---
 
-Jemalloc is modified with changes that allow us to implement the Redis
-active defragmentation logic. However this feature of Redis is not mandatory
-and Redis is able to understand if the Jemalloc version it is compiled
-against supports such Redis-specific modifications. So in theory, if you
+Jemalloc is modified with changes that allow us to implement the Valkey
+active defragmentation logic. However this feature of Valkey is not mandatory
+and Valkey is able to understand if the Jemalloc version it is compiled
+against supports such Valkey-specific modifications. So in theory, if you
 are not interested in the active defragmentation, you can replace Jemalloc
 just following these steps:
 
@@ -28,7 +29,7 @@ just following these steps:
    Jemalloc configuration script is broken and will not work nested in another
    git repository.
 
-However note that we change Jemalloc settings via the `configure` script of Jemalloc using the `--with-lg-quantum` option, setting it to the value of 3 instead of 4. This provides us with more size classes that better suit the Redis data structures, in order to gain memory efficiency.
+However note that we change Jemalloc settings via the `configure` script of Jemalloc using the `--with-lg-quantum` option, setting it to the value of 3 instead of 4. This provides us with more size classes that better suit the Valkey data structures, in order to gain memory efficiency.
 
 If you want to upgrade Jemalloc while also providing support for
 active defragmentation, in addition to the above steps you need to perform
@@ -38,7 +39,7 @@ the following additional steps:
    to add `#define JEMALLOC_FRAG_HINT`.
 6. Implement the function `je_get_defrag_hint()` inside `src/jemalloc.c`. You
    can see how it is implemented in the current Jemalloc source tree shipped
-   with Redis, and rewrite it according to the new Jemalloc internals, if they
+   with Valkey, and rewrite it according to the new Jemalloc internals, if they
    changed, otherwise you could just copy the old implementation if you are
    upgrading just to a similar version of Jemalloc.
 
@@ -61,7 +62,7 @@ cd deps/jemalloc
 Hiredis
 ---
 
-Hiredis is used by Sentinel, `redis-cli` and `redis-benchmark`. Like Redis, uses the SDS string library, but not necessarily the same version. In order to avoid conflicts, this version has all SDS identifiers prefixed by `hi`.
+Hiredis is used by Sentinel, `valkey-cli` and `valkey-benchmark`. Like Valkey, uses the SDS string library, but not necessarily the same version. In order to avoid conflicts, this version has all SDS identifiers prefixed by `hi`.
 
 1. `git subtree pull --prefix deps/hiredis https://github.com/redis/hiredis.git <version-tag> --squash`<br>
 This should hopefully merge the local changes into the new version.
@@ -71,7 +72,7 @@ Linenoise
 ---
 
 Linenoise is rarely upgraded as needed. The upgrade process is trivial since
-Redis uses a non modified version of linenoise, so to upgrade just do the
+Valkey uses a non modified version of linenoise, so to upgrade just do the
 following:
 
 1. Remove the linenoise directory.
@@ -81,11 +82,11 @@ Lua
 ---
 
 We use Lua 5.1 and no upgrade is planned currently, since we don't want to break
-Lua scripts for new Lua features: in the context of Redis Lua scripts the
+Lua scripts for new Lua features: in the context of Valkey Lua scripts the
 capabilities of 5.1 are usually more than enough, the release is rock solid,
 and we definitely don't want to break old scripts.
 
-So upgrading of Lua is up to the Redis project maintainers and should be a
+So upgrading of Lua is up to the Valkey project maintainers and should be a
 manual procedure performed by taking a diff between the different versions.
 
 Currently we have at least the following differences between official Lua 5.1
@@ -94,6 +95,7 @@ and our version:
 1. Makefile is modified to allow a different compiler than GCC.
 2. We have the implementation source code, and directly link to the following external libraries: `lua_cjson.o`, `lua_struct.o`, `lua_cmsgpack.o` and `lua_bit.o`.
 3. There is a security fix in `ldo.c`, line 498: The check for `LUA_SIGNATURE[0]` is removed in order to avoid direct bytecode execution.
+4. In `lstring.c`, the luaS_newlstr function's hash calculation has been upgraded from a simple hash function to MurmurHash3, implemented within the same file, to enhance performance, particularly for operations involving large strings.
 
 Hdr_Histogram
 ---
@@ -104,3 +106,17 @@ We use a customized version based on master branch commit e4448cf6d1cd08fff51981
 2. Copy updated files from newer version onto files in /hdr_histogram.
 3. Apply the changes from 1 above to the updated files.
 
+fast_float
+---
+The fast_float library provides fast header-only implementations for the C++ from_chars functions for `float` and `double` types as well as integer types.  These functions convert ASCII strings representing decimal values (e.g., `1.3e10`) into binary types. The functions are much faster than comparable number-parsing functions from existing C++ standard libraries.
+
+Specifically, `fast_float` provides the following function to parse floating-point numbers with a C++17-like syntax (the library itself only requires C++11):
+
+    template <typename T, typename UC = char, typename = FASTFLOAT_ENABLE_IF(is_supported_float_type<T>())>
+    from_chars_result_t<UC> from_chars(UC const *first, UC const *last, T &value, chars_format fmt = chars_format::general);
+
+To upgrade the library,
+1. Check out https://github.com/fastfloat/fast_float/tree/main
+2. cd fast_float
+3. Invoke "python3 ./script/amalgamate.py --output fast_float.h"
+4. Copy fast_float.h file to "deps/fast_float/".

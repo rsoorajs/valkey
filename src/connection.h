@@ -1,6 +1,6 @@
 
 /*
- * Copyright (c) 2019, Redis Labs
+ * Copyright (c) 2019, Redis Ltd.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -38,7 +38,7 @@
 
 #include "ae.h"
 
-#define CONN_INFO_LEN   32
+#define CONN_INFO_LEN 32
 #define CONN_ADDR_STR_LEN 128 /* Similar to INET6_ADDRSTRLEN, hoping to handle other protocols. */
 
 struct aeEventLoop;
@@ -54,13 +54,15 @@ typedef enum {
     CONN_STATE_ERROR
 } ConnectionState;
 
-#define CONN_FLAG_CLOSE_SCHEDULED   (1<<0)      /* Closed scheduled by a handler */
-#define CONN_FLAG_WRITE_BARRIER     (1<<1)      /* Write barrier requested */
+#define CONN_FLAG_CLOSE_SCHEDULED (1 << 0)      /* Closed scheduled by a handler */
+#define CONN_FLAG_WRITE_BARRIER (1 << 1)        /* Write barrier requested */
+#define CONN_FLAG_ALLOW_ACCEPT_OFFLOAD (1 << 2) /* Connection accept can be offloaded to IO threads. */
 
-#define CONN_TYPE_SOCKET            "tcp"
-#define CONN_TYPE_UNIX              "unix"
-#define CONN_TYPE_TLS               "tls"
-#define CONN_TYPE_MAX               8           /* 8 is enough to be extendable */
+#define CONN_TYPE_SOCKET "tcp"
+#define CONN_TYPE_UNIX "unix"
+#define CONN_TYPE_TLS "tls"
+#define CONN_TYPE_RDMA "rdma"
+#define CONN_TYPE_MAX 8 /* 8 is enough to be extendable */
 
 typedef void (*ConnectionCallbackFunc)(struct connection *conn);
 
@@ -79,15 +81,20 @@ typedef struct ConnectionType {
     int (*addr)(connection *conn, char *ip, size_t ip_len, int *port, int remote);
     int (*is_local)(connection *conn);
     int (*listen)(connListener *listener);
+    void (*closeListener)(connListener *listener);
 
     /* create/shutdown/close connection */
-    connection* (*conn_create)(void);
-    connection* (*conn_create_accepted)(int fd, void *priv);
+    connection *(*conn_create)(void);
+    connection *(*conn_create_accepted)(int fd, void *priv);
     void (*shutdown)(struct connection *conn);
     void (*close)(struct connection *conn);
 
     /* connect & accept */
-    int (*connect)(struct connection *conn, const char *addr, int port, const char *source_addr, ConnectionCallbackFunc connect_handler);
+    int (*connect)(struct connection *conn,
+                   const char *addr,
+                   int port,
+                   const char *source_addr,
+                   ConnectionCallbackFunc connect_handler);
     int (*blocking_connect)(struct connection *conn, const char *addr, int port, long long timeout);
     int (*accept)(struct connection *conn, ConnectionCallbackFunc accept_handler);
 
@@ -106,8 +113,17 @@ typedef struct ConnectionType {
     int (*has_pending_data)(void);
     int (*process_pending_data)(void);
 
+    /* Postpone update state - with IO threads & TLS we don't want the IO threads to update the event loop events - let
+     * the main-thread do it */
+    void (*postpone_update_state)(struct connection *conn, int);
+    /* Called by the main-thread */
+    void (*update_state)(struct connection *conn);
+
     /* TLS specified methods */
     sds (*get_peer_cert)(struct connection *conn);
+
+    /* Miscellaneous */
+    int (*connIntegrityChecked)(void); // return 1 if connection type has built-in integrity checks
 } ConnectionType;
 
 struct connection {
@@ -168,8 +184,11 @@ static inline int connAccept(connection *conn, ConnectionCallbackFunc accept_han
  * If C_ERR is returned, the operation failed and the connection handler shall
  * not be expected.
  */
-static inline int connConnect(connection *conn, const char *addr, int port, const char *src_addr,
-        ConnectionCallbackFunc connect_handler) {
+static inline int connConnect(connection *conn,
+                              const char *addr,
+                              int port,
+                              const char *src_addr,
+                              ConnectionCallbackFunc connect_handler) {
     return conn->type->connect(conn, addr, port, src_addr, connect_handler);
 }
 
@@ -207,7 +226,7 @@ static inline int connWritev(connection *conn, const struct iovec *iov, int iovc
 }
 
 /* Read from the connection, behaves the same as read(2).
- * 
+ *
  * Like read(2), a short read is possible.  A return value of 0 will indicate the
  * connection was closed, and -1 will indicate an error.
  *
@@ -292,12 +311,10 @@ static inline int connAddr(connection *conn, char *ip, size_t ip_len, int *port,
  * (matches for ":"), the ip is surrounded by []. IP and port are just
  * separated by colons. This the standard to display addresses within the server. */
 static inline int formatAddr(char *buf, size_t buf_len, char *ip, int port) {
-    return snprintf(buf, buf_len, strchr(ip,':') ?
-           "[%s]:%d" : "%s:%d", ip, port);
+    return snprintf(buf, buf_len, strchr(ip, ':') ? "[%s]:%d" : "%s:%d", ip, port);
 }
 
-static inline int connFormatAddr(connection *conn, char *buf, size_t buf_len, int remote)
-{
+static inline int connFormatAddr(connection *conn, char *buf, size_t buf_len, int remote) {
     char ip[CONN_ADDR_STR_LEN];
     int port;
 
@@ -356,7 +373,7 @@ static inline void *connGetPrivateData(connection *conn) {
  * For sockets, we always return "fd=<fdnum>" to maintain compatibility.
  */
 static inline const char *connGetInfo(connection *conn, char *buf, size_t buf_len) {
-    snprintf(buf, buf_len-1, "fd=%i", conn == NULL ? -1 : conn->fd);
+    snprintf(buf, buf_len - 1, "fd=%i", conn == NULL ? -1 : conn->fd);
     return buf;
 }
 
@@ -431,10 +448,16 @@ static inline int connListen(connListener *listener) {
     return listener->ct->listen(listener);
 }
 
+/* Close a listened listener */
+static inline void connCloseListener(connListener *listener) {
+    if (listener->count) {
+        listener->ct->closeListener(listener);
+    }
+}
+
 /* Get accept_handler of a connection type */
 static inline aeFileProc *connAcceptHandler(ConnectionType *ct) {
-    if (ct)
-        return ct->accept_handler;
+    if (ct) return ct->accept_handler;
     return NULL;
 }
 
@@ -444,10 +467,27 @@ sds getListensInfoString(sds info);
 int RedisRegisterConnectionTypeSocket(void);
 int RedisRegisterConnectionTypeUnix(void);
 int RedisRegisterConnectionTypeTLS(void);
+int RegisterConnectionTypeRdma(void);
 
 /* Return 1 if connection is using TLS protocol, 0 if otherwise. */
 static inline int connIsTLS(connection *conn) {
     return conn && conn->type == connectionTypeTls();
 }
 
-#endif  /* __REDIS_CONNECTION_H */
+static inline void connUpdateState(connection *conn) {
+    if (conn->type->update_state) {
+        conn->type->update_state(conn);
+    }
+}
+
+static inline void connSetPostponeUpdateState(connection *conn, int on) {
+    if (conn->type->postpone_update_state) {
+        conn->type->postpone_update_state(conn, on);
+    }
+}
+
+static inline int connIsIntegrityChecked(connection *conn) {
+    return conn->type->connIntegrityChecked && conn->type->connIntegrityChecked();
+}
+
+#endif /* __REDIS_CONNECTION_H */

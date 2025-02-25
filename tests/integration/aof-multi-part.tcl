@@ -4,11 +4,11 @@ set server_path [tmpdir server.multi.aof]
 set aof_dirname "appendonlydir"
 set aof_basename "appendonly.aof"
 set aof_dirpath "$server_path/$aof_dirname"
-set aof_base1_file "$server_path/$aof_dirname/${aof_basename}.1$::base_aof_sufix$::aof_format_suffix"
-set aof_base2_file "$server_path/$aof_dirname/${aof_basename}.2$::base_aof_sufix$::aof_format_suffix"
-set aof_incr1_file "$server_path/$aof_dirname/${aof_basename}.1$::incr_aof_sufix$::aof_format_suffix"
-set aof_incr2_file "$server_path/$aof_dirname/${aof_basename}.2$::incr_aof_sufix$::aof_format_suffix"
-set aof_incr3_file "$server_path/$aof_dirname/${aof_basename}.3$::incr_aof_sufix$::aof_format_suffix"
+set aof_base1_file "$server_path/$aof_dirname/${aof_basename}.1$::base_aof_suffix$::aof_format_suffix"
+set aof_base2_file "$server_path/$aof_dirname/${aof_basename}.2$::base_aof_suffix$::aof_format_suffix"
+set aof_incr1_file "$server_path/$aof_dirname/${aof_basename}.1$::incr_aof_suffix$::aof_format_suffix"
+set aof_incr2_file "$server_path/$aof_dirname/${aof_basename}.2$::incr_aof_suffix$::aof_format_suffix"
+set aof_incr3_file "$server_path/$aof_dirname/${aof_basename}.3$::incr_aof_suffix$::aof_format_suffix"
 set aof_manifest_file "$server_path/$aof_dirname/${aof_basename}$::manifest_suffix"
 set aof_old_name_old_path "$server_path/$aof_basename"
 set aof_old_name_new_path "$aof_dirpath/$aof_basename"
@@ -294,7 +294,7 @@ tags {"external:skip"} {
         start_server_aof [list dir $server_path] {
             assert_equal 1 [is_alive [srv pid]]
 
-            set client [redis [srv host] [srv port] 0 $::tls]
+            set client [valkey [srv host] [srv port] 0 $::tls]
 
             assert_equal OK [$client set k1 v1]
             assert_equal v1 [$client get k1]
@@ -332,7 +332,7 @@ tags {"external:skip"} {
 
         start_server_aof [list dir $server_path] {
             assert_equal 1 [is_alive [srv pid]]
-            set client [redis [srv host] [srv port] 0 $::tls]
+            set client [valkey [srv host] [srv port] 0 $::tls]
             wait_done_loading $client
 
             assert_equal v1 [$client get k1]
@@ -364,7 +364,7 @@ tags {"external:skip"} {
 
         start_server_aof [list dir $server_path] {
             assert_equal 1 [is_alive [srv pid]]
-            set client [redis [srv host] [srv port] 0 $::tls]
+            set client [valkey [srv host] [srv port] 0 $::tls]
             wait_done_loading $client
 
             assert_equal v1 [$client get k1]
@@ -395,7 +395,7 @@ tags {"external:skip"} {
 
         start_server_aof [list dir $server_path] {
             assert_equal 1 [is_alive [srv pid]]
-            set client [redis [srv host] [srv port] 0 $::tls]
+            set client [valkey [srv host] [srv port] 0 $::tls]
             wait_done_loading $client
 
             assert_equal v1 [$client get k1]
@@ -406,7 +406,7 @@ tags {"external:skip"} {
         clean_aof_persistence $aof_dirpath
     }
 
-    test {Multi Part AOF can load data from old version redis (rdb preamble no)} {
+    test {Multi Part AOF can load data from old version valkey (rdb preamble no)} {
         create_aof $server_path $aof_old_name_old_path {
             append_to_aof [formatCommand set k1 v1]
             append_to_aof [formatCommand set k2 v2]
@@ -416,7 +416,7 @@ tags {"external:skip"} {
         start_server_aof [list dir $server_path] {
             assert_equal 1 [is_alive [srv pid]]
 
-            set client [redis [srv host] [srv port] 0 $::tls]
+            set client [valkey [srv host] [srv port] 0 $::tls]
             wait_done_loading $client
 
             assert_equal v1 [$client get k1]
@@ -452,12 +452,12 @@ tags {"external:skip"} {
         clean_aof_persistence $aof_dirpath
     }
 
-    test {Multi Part AOF can load data from old version redis (rdb preamble yes)} {
+    test {Multi Part AOF can load data from old version valkey (rdb preamble yes)} {
         exec cp tests/assets/rdb-preamble.aof $aof_old_name_old_path
         start_server_aof [list dir $server_path] {
             assert_equal 1 [is_alive [srv pid]]
 
-            set client [redis [srv host] [srv port] 0 $::tls]
+            set client [valkey [srv host] [srv port] 0 $::tls]
             wait_done_loading $client
 
             # k1 k2 in rdb header and k3 in AOF tail
@@ -509,7 +509,7 @@ tags {"external:skip"} {
         start_server_aof [list dir $server_path] {
             assert_equal 1 [is_alive [srv pid]]
 
-            set client [redis [srv host] [srv port] 0 $::tls]
+            set client [valkey [srv host] [srv port] 0 $::tls]
             wait_done_loading $client
 
             assert_equal v1 [$client get k1]
@@ -548,7 +548,7 @@ tags {"external:skip"} {
         start_server_aof [list dir $server_path] {
             assert_equal 1 [is_alive [srv pid]]
 
-            set client [redis [srv host] [srv port] 0 $::tls]
+            set client [valkey [srv host] [srv port] 0 $::tls]
             wait_done_loading $client
 
             assert_equal 0 [$client exists k1]
@@ -604,71 +604,71 @@ tags {"external:skip"} {
         }
 
         start_server_aof [list dir $server_path] {
-            set redis1 [redis [srv host] [srv port] 0 $::tls]
+            set valkey1 [valkey [srv host] [srv port] 0 $::tls]
 
             start_server [list overrides [list dir $server_path appendonly yes appendfilename appendonly.aof2]] {
-                set redis2 [redis [srv host] [srv port] 0 $::tls]
+                set valkey2 [valkey [srv host] [srv port] 0 $::tls]
 
                 test "Multi Part AOF can upgrade when when two servers share the same server dir (server1)" {
-                    wait_done_loading $redis1
-                    assert_equal v1 [$redis1 get k1]
-                    assert_equal v2 [$redis1 get k2]
-                    assert_equal v3 [$redis1 get k3]
+                    wait_done_loading $valkey1
+                    assert_equal v1 [$valkey1 get k1]
+                    assert_equal v2 [$valkey1 get k2]
+                    assert_equal v3 [$valkey1 get k3]
 
-                    assert_equal 0 [$redis1 exists k4]
-                    assert_equal 0 [$redis1 exists k5]
-                    assert_equal 0 [$redis1 exists k6]
+                    assert_equal 0 [$valkey1 exists k4]
+                    assert_equal 0 [$valkey1 exists k5]
+                    assert_equal 0 [$valkey1 exists k6]
 
                     assert_aof_manifest_content $aof_manifest_file  {
                         {file appendonly.aof seq 1 type b}
                         {file appendonly.aof.1.incr.aof seq 1 type i}
                     }
 
-                    $redis1 bgrewriteaof
-                    waitForBgrewriteaof $redis1
+                    $valkey1 bgrewriteaof
+                    waitForBgrewriteaof $valkey1
 
-                    assert_equal OK [$redis1 set k v]
+                    assert_equal OK [$valkey1 set k v]
 
                     assert_aof_manifest_content $aof_manifest_file {
                         {file appendonly.aof.2.base.rdb seq 2 type b}
                         {file appendonly.aof.2.incr.aof seq 2 type i}
                     }
 
-                    set d1 [$redis1 debug digest]
-                    $redis1 debug loadaof
-                    set d2 [$redis1 debug digest]
+                    set d1 [$valkey1 debug digest]
+                    $valkey1 debug loadaof
+                    set d2 [$valkey1 debug digest]
                     assert {$d1 eq $d2}
                 }
 
                 test "Multi Part AOF can upgrade when when two servers share the same server dir (server2)" {
-                    wait_done_loading $redis2
+                    wait_done_loading $valkey2
 
-                    assert_equal 0 [$redis2 exists k1]
-                    assert_equal 0 [$redis2 exists k2]
-                    assert_equal 0 [$redis2 exists k3]
+                    assert_equal 0 [$valkey2 exists k1]
+                    assert_equal 0 [$valkey2 exists k2]
+                    assert_equal 0 [$valkey2 exists k3]
 
-                    assert_equal v4 [$redis2 get k4]
-                    assert_equal v5 [$redis2 get k5]
-                    assert_equal v6 [$redis2 get k6]
+                    assert_equal v4 [$valkey2 get k4]
+                    assert_equal v5 [$valkey2 get k5]
+                    assert_equal v6 [$valkey2 get k6]
 
                     assert_aof_manifest_content $aof_manifest_file2  {
                         {file appendonly.aof2 seq 1 type b}
                         {file appendonly.aof2.1.incr.aof seq 1 type i}
                     }
 
-                    $redis2 bgrewriteaof
-                    waitForBgrewriteaof $redis2
+                    $valkey2 bgrewriteaof
+                    waitForBgrewriteaof $valkey2
 
-                    assert_equal OK [$redis2 set k v]
+                    assert_equal OK [$valkey2 set k v]
 
                     assert_aof_manifest_content $aof_manifest_file2 {
                         {file appendonly.aof2.2.base.rdb seq 2 type b}
                         {file appendonly.aof2.2.incr.aof seq 2 type i}
                     }
 
-                    set d1 [$redis2 debug digest]
-                    $redis2 debug loadaof
-                    set d2 [$redis2 debug digest]
+                    set d1 [$valkey2 debug digest]
+                    $valkey2 debug loadaof
+                    set d2 [$valkey2 debug digest]
                     assert {$d1 eq $d2}
                 }
             }
@@ -677,23 +677,23 @@ tags {"external:skip"} {
 
     test {Multi Part AOF can handle appendfilename contains whitespaces} {
         start_server [list overrides [list appendonly yes appendfilename "\" file seq \\n\\n.aof \""]] {
-            set dir [get_redis_dir]
+            set dir [get_valkey_dir]
             set aof_manifest_name [format "%s/%s/%s%s" $dir "appendonlydir" " file seq \n\n.aof " $::manifest_suffix]
-            set redis [redis [srv host] [srv port] 0 $::tls]
+            set valkey [valkey [srv host] [srv port] 0 $::tls]
 
-            assert_equal OK [$redis set k1 v1]
+            assert_equal OK [$valkey set k1 v1]
 
-            $redis bgrewriteaof
-            waitForBgrewriteaof $redis
+            $valkey bgrewriteaof
+            waitForBgrewriteaof $valkey
 
             assert_aof_manifest_content $aof_manifest_name {
                 {file " file seq \n\n.aof .2.base.rdb" seq 2 type b}
                 {file " file seq \n\n.aof .2.incr.aof" seq 2 type i}
             }
 
-            set d1 [$redis debug digest]
-            $redis debug loadaof
-            set d2 [$redis debug digest]
+            set d1 [$valkey debug digest]
+            $valkey debug loadaof
+            set d2 [$valkey debug digest]
             assert {$d1 eq $d2}
         }
 
@@ -702,10 +702,10 @@ tags {"external:skip"} {
 
     test {Multi Part AOF can create BASE (RDB format) when server starts from empty} {
         start_server_aof [list dir $server_path] {
-            set client [redis [srv host] [srv port] 0 $::tls]
+            set client [valkey [srv host] [srv port] 0 $::tls]
             wait_done_loading $client
 
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_sufix}${::rdb_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_suffix}${::rdb_format_suffix}"]
 
             assert_aof_manifest_content $aof_manifest_file {
                 {file appendonly.aof.1.base.rdb seq 1 type b}
@@ -725,10 +725,10 @@ tags {"external:skip"} {
 
     test {Multi Part AOF can create BASE (AOF format) when server starts from empty} {
         start_server_aof [list dir $server_path aof-use-rdb-preamble no] {
-            set client [redis [srv host] [srv port] 0 $::tls]
+            set client [valkey [srv host] [srv port] 0 $::tls]
             wait_done_loading $client
 
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_sufix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_suffix}${::aof_format_suffix}"]
 
             assert_aof_manifest_content $aof_manifest_file {
                 {file appendonly.aof.1.base.aof seq 1 type b}
@@ -746,6 +746,38 @@ tags {"external:skip"} {
         clean_aof_persistence $aof_dirpath
     }
 
+    test {Changing aof-use-rdb-preamble during rewrite process} {
+        start_server_aof [list dir $server_path aof-use-rdb-preamble no] {
+            wait_done_loading r
+
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_suffix}${::aof_format_suffix}"]
+
+            assert_aof_manifest_content $aof_manifest_file {
+                {file appendonly.aof.1.base.aof seq 1 type b}
+                {file appendonly.aof.1.incr.aof seq 1 type i}
+            }
+
+            r set foo bar
+            r config set rdb-key-save-delay 1000000
+            r bgrewriteaof
+            wait_for_condition 100 10 {
+                [s aof_rewrite_in_progress] eq 1
+            } else {
+                fail "aof rewrite did not start in time"
+            }
+            r config set aof-use-rdb-preamble yes
+            r config set rdb-key-save-delay 0
+            waitForBgrewriteaof r
+
+            assert_aof_manifest_content $aof_manifest_file {
+                {file appendonly.aof.2.base.aof seq 2 type b}
+                {file appendonly.aof.2.incr.aof seq 2 type i}
+            }
+        }
+
+        clean_aof_persistence $aof_dirpath
+    }
+
     # Test Part 2
     #
     # To test whether the AOFRW behaves as expected during the server run.
@@ -756,7 +788,7 @@ tags {"external:skip"} {
 
 
     start_server {tags {"Multi Part AOF"} overrides {aof-use-rdb-preamble {yes} appendonly {no} save {}}} {
-        set dir [get_redis_dir]
+        set dir [get_valkey_dir]
         set aof_basename "appendonly.aof"
         set aof_dirname "appendonlydir"
         set aof_dirpath "$dir/$aof_dirname"
@@ -795,8 +827,8 @@ tags {"external:skip"} {
 
             # Check we really have these files
             assert_equal 1 [check_file_exist $aof_dirpath $aof_manifest_name]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_sufix}${::rdb_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::incr_aof_sufix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_suffix}${::rdb_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::incr_aof_suffix}${::aof_format_suffix}"]
 
             r bgrewriteaof
             waitForBgrewriteaof r
@@ -810,13 +842,13 @@ tags {"external:skip"} {
             assert_equal 1 [check_file_exist $aof_dirpath $aof_manifest_name]
             # Wait bio delete history
             wait_for_condition 1000 10 {
-                [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_sufix}${::rdb_format_suffix}"] == 0 &&
-                [check_file_exist $aof_dirpath "${aof_basename}.1${::incr_aof_sufix}${::aof_format_suffix}"] == 0
+                [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_suffix}${::rdb_format_suffix}"] == 0 &&
+                [check_file_exist $aof_dirpath "${aof_basename}.1${::incr_aof_suffix}${::aof_format_suffix}"] == 0
             } else {
                 fail "Failed to delete history AOF"
             }
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.2${::base_aof_sufix}${::rdb_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.2${::incr_aof_sufix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.2${::base_aof_suffix}${::rdb_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.2${::incr_aof_suffix}${::aof_format_suffix}"]
 
             stop_write_load $load_handle0
             wait_load_handlers_disconnected
@@ -869,11 +901,11 @@ tags {"external:skip"} {
                 {file appendonly.aof.5.incr.aof seq 5 type i}
             }
 
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.2${::base_aof_sufix}${::rdb_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.2${::incr_aof_sufix}${::aof_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.3${::incr_aof_sufix}${::aof_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.4${::incr_aof_sufix}${::aof_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.5${::incr_aof_sufix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.2${::base_aof_suffix}${::rdb_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.2${::incr_aof_suffix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.3${::incr_aof_suffix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.4${::incr_aof_suffix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.5${::incr_aof_suffix}${::aof_format_suffix}"]
 
             stop_write_load $load_handle0
             wait_load_handlers_disconnected
@@ -904,17 +936,17 @@ tags {"external:skip"} {
 
             # Wait bio delete history
             wait_for_condition 1000 10 {
-                [check_file_exist $aof_dirpath "${aof_basename}.2${::base_aof_sufix}${::rdb_format_suffix}"] == 0 &&
-                [check_file_exist $aof_dirpath "${aof_basename}.2${::incr_aof_sufix}${::aof_format_suffix}"] == 0 &&
-                [check_file_exist $aof_dirpath "${aof_basename}.3${::incr_aof_sufix}${::aof_format_suffix}"] == 0 &&
-                [check_file_exist $aof_dirpath "${aof_basename}.4${::incr_aof_sufix}${::aof_format_suffix}"] == 0 &&
-                [check_file_exist $aof_dirpath "${aof_basename}.5${::incr_aof_sufix}${::aof_format_suffix}"] == 0
+                [check_file_exist $aof_dirpath "${aof_basename}.2${::base_aof_suffix}${::rdb_format_suffix}"] == 0 &&
+                [check_file_exist $aof_dirpath "${aof_basename}.2${::incr_aof_suffix}${::aof_format_suffix}"] == 0 &&
+                [check_file_exist $aof_dirpath "${aof_basename}.3${::incr_aof_suffix}${::aof_format_suffix}"] == 0 &&
+                [check_file_exist $aof_dirpath "${aof_basename}.4${::incr_aof_suffix}${::aof_format_suffix}"] == 0 &&
+                [check_file_exist $aof_dirpath "${aof_basename}.5${::incr_aof_suffix}${::aof_format_suffix}"] == 0
             } else {
                 fail "Failed to delete history AOF"
             }
 
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.3${::base_aof_sufix}${::rdb_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.6${::incr_aof_sufix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.3${::base_aof_suffix}${::rdb_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.6${::incr_aof_suffix}${::aof_format_suffix}"]
 
             set d1 [r debug digest]
             r debug loadaof
@@ -933,10 +965,10 @@ tags {"external:skip"} {
                 {file appendonly.aof.4.base.rdb seq 4 type b}
             }
 
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.4${::base_aof_sufix}${::rdb_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.4${::base_aof_suffix}${::rdb_format_suffix}"]
             wait_for_condition 1000 10 {
-                [check_file_exist $aof_dirpath "${aof_basename}.6${::incr_aof_sufix}${::aof_format_suffix}"] == 0 &&
-                [check_file_exist $aof_dirpath "${aof_basename}.7${::incr_aof_sufix}${::aof_format_suffix}"] == 0
+                [check_file_exist $aof_dirpath "${aof_basename}.6${::incr_aof_suffix}${::aof_format_suffix}"] == 0 &&
+                [check_file_exist $aof_dirpath "${aof_basename}.7${::incr_aof_suffix}${::aof_format_suffix}"] == 0
             } else {
                 fail "Failed to delete history AOF"
             }
@@ -958,13 +990,13 @@ tags {"external:skip"} {
 
             # Wait bio delete history
             wait_for_condition 1000 10 {
-                [check_file_exist $aof_dirpath "${aof_basename}.4${::base_aof_sufix}${::rdb_format_suffix}"] == 0
+                [check_file_exist $aof_dirpath "${aof_basename}.4${::base_aof_suffix}${::rdb_format_suffix}"] == 0
             } else {
                 fail "Failed to delete history AOF"
             }
 
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.5${::base_aof_sufix}${::rdb_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::incr_aof_sufix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.5${::base_aof_suffix}${::rdb_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::incr_aof_suffix}${::aof_format_suffix}"]
         }
 
         test "AOF enable/disable auto gc" {
@@ -986,10 +1018,10 @@ tags {"external:skip"} {
                 {file appendonly.aof.3.incr.aof seq 3 type i}
             }
 
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.5${::base_aof_sufix}${::rdb_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.6${::base_aof_sufix}${::rdb_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::incr_aof_sufix}${::aof_format_suffix}"]
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.2${::incr_aof_sufix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.5${::base_aof_suffix}${::rdb_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.6${::base_aof_suffix}${::rdb_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.1${::incr_aof_suffix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.2${::incr_aof_suffix}${::aof_format_suffix}"]
 
             r config set aof-disable-auto-gc no
 
@@ -1001,10 +1033,10 @@ tags {"external:skip"} {
 
             # wait bio delete history
             wait_for_condition 1000 10 {
-                [check_file_exist $aof_dirpath "${aof_basename}.5${::base_aof_sufix}${::rdb_format_suffix}"] == 0 &&
-                [check_file_exist $aof_dirpath "${aof_basename}.6${::base_aof_sufix}${::rdb_format_suffix}"] == 0 &&
-                [check_file_exist $aof_dirpath "${aof_basename}.1${::incr_aof_sufix}${::aof_format_suffix}"] == 0 &&
-                [check_file_exist $aof_dirpath "${aof_basename}.2${::incr_aof_sufix}${::aof_format_suffix}"] == 0
+                [check_file_exist $aof_dirpath "${aof_basename}.5${::base_aof_suffix}${::rdb_format_suffix}"] == 0 &&
+                [check_file_exist $aof_dirpath "${aof_basename}.6${::base_aof_suffix}${::rdb_format_suffix}"] == 0 &&
+                [check_file_exist $aof_dirpath "${aof_basename}.1${::incr_aof_suffix}${::aof_format_suffix}"] == 0 &&
+                [check_file_exist $aof_dirpath "${aof_basename}.2${::incr_aof_suffix}${::aof_format_suffix}"] == 0
             } else {
                 fail "Failed to delete history AOF"
             }
@@ -1160,7 +1192,7 @@ tags {"external:skip"} {
             waitForBgrewriteaof r
 
             # Can create New INCR AOF
-            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.10${::incr_aof_sufix}${::aof_format_suffix}"]
+            assert_equal 1 [check_file_exist $aof_dirpath "${aof_basename}.10${::incr_aof_suffix}${::aof_format_suffix}"]
 
             assert_aof_manifest_content $aof_manifest_file {
                 {file appendonly.aof.11.base.rdb seq 11 type b}
@@ -1174,7 +1206,7 @@ tags {"external:skip"} {
         }
 
         start_server {overrides {aof-use-rdb-preamble {yes} appendonly {no} save {}}} {
-            set dir [get_redis_dir]
+            set dir [get_valkey_dir]
             set aof_basename "appendonly.aof"
             set aof_dirname "appendonlydir"
             set aof_dirpath "$dir/$aof_dirname"
@@ -1216,7 +1248,7 @@ tags {"external:skip"} {
                 # Make sure manifest file is not created
                 assert_equal 0 [check_file_exist $aof_dirpath $aof_manifest_name]
                 # Make sure BASE AOF is not created
-                assert_equal 0 [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_sufix}${::rdb_format_suffix}"]
+                assert_equal 0 [check_file_exist $aof_dirpath "${aof_basename}.1${::base_aof_suffix}${::rdb_format_suffix}"]
 
                 # Make sure the next AOFRW has started
                 wait_for_condition 1000 50 {
