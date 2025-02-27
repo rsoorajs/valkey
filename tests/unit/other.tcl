@@ -11,6 +11,7 @@ start_server {tags {"other"}} {
         assert_match "*MEMORY <subcommand> *" [r MEMORY HELP]
         assert_match "*PUBSUB <subcommand> *" [r PUBSUB HELP]
         assert_match "*SLOWLOG <subcommand> *" [r SLOWLOG HELP]
+        assert_match "*COMMANDLOG <subcommand> *" [r COMMANDLOG HELP]
         assert_match "*CLIENT <subcommand> *" [r CLIENT HELP]
         assert_match "*COMMAND <subcommand> *" [r COMMAND HELP]
         assert_match "*CONFIG <subcommand> *" [r CONFIG HELP]
@@ -28,6 +29,10 @@ start_server {tags {"other"}} {
         if {[string match {*jemalloc*} [s mem_allocator]]} {
             assert_equal {OK} [r memory purge]
         }
+    }
+
+    test {Coverage: ECHO} {
+        assert_equal bang [r ECHO bang]
     }
 
     test {SAVE - make sure there are all the types as values} {
@@ -353,6 +358,42 @@ start_server {tags {"other"}} {
         assert_error {*unknown command*} {r CONFIG|GET GET_XX}
         assert_error {*unknown subcommand*} {r CONFIG GET_XX}
     }
+
+    test "Extended Redis Compatibility config" {
+        # This config is added in Valkey 8.0, shall be deprecated and have no
+        # effect in 9.x and be deleted in 10.0.
+        set hello [r hello 3]
+        set version [dict get $hello version]
+        if {[string match "10.*" $version]} {
+            # Check that the config doesn't exist anymore.
+            assert_error "ERR Unknown*" {r config set extended-redis-compatibility yes}
+            error "We shall also delete this test case"
+        } elseif {[string match "9.*" $version]} {
+            # This config is scheduled for removal. In 9.x it should still
+            # exists but have no effect.
+            r config set extended-redis-compatibility yes
+            set hello [r hello 3]
+            assert_equal valkey [dict get $hello server]
+            assert_equal $version [dict get $hello version]
+            r config set extended-redis-compatibility no
+        } elseif {[string match "8.*" $version] || ($version eq "255.255.255")} {
+            # In 8.x, the config shall work and affect HELLO server and version.
+            r config set extended-redis-compatibility yes
+            set hello [r hello 3]
+            assert_equal "redis" [dict get $hello server]
+            assert_match "7.2.*" [dict get $hello version]
+            set info [r info server]
+            assert_match "*redis_mode:*" $info
+            assert_no_match "*server_mode:*" $info
+            r config set extended-redis-compatibility no
+            set hello [r hello 3]
+            assert_equal "valkey" [dict get $hello server]
+            assert_equal $version [dict get $hello version]
+            set info [r info server]
+            assert_no_match "*redis_mode:*" $info
+            assert_match "*server_mode:*" $info
+        }
+    }
 }
 
 start_server {tags {"other external:skip"}} {
@@ -360,7 +401,16 @@ start_server {tags {"other external:skip"}} {
         r config set save ""
         r config set rdb-key-save-delay 1000000
 
-        populate 4095 "" 1
+        # Populate some, then check table size and populate more up to one less
+        # than the soft maximum fill factor.
+        populate 2000 a 1
+        set table_size [main_hash_table_size]
+        populate [main_hash_table_keys_before_rehashing_starts] b 1
+
+        # Now we are close to resizing. Check that rehashing didn't start.
+        assert_equal $table_size [main_hash_table_size]
+        assert_no_match "*Hash table 1 stats*" [r debug htstats 9]
+
         r bgsave
         wait_for_condition 10 100 {
             [s rdb_bgsave_in_progress] eq 1
@@ -370,14 +420,15 @@ start_server {tags {"other external:skip"}} {
 
         r mset k1 v1 k2 v2
         # Hash table should not rehash
-        assert_no_match "*table size: 8192*" [r debug HTSTATS 9]
+        assert_equal $table_size [main_hash_table_size]
+        assert_no_match "*Hash table 1 stats*" [r debug htstats 9]
         exec kill -9 [get_child_pid 0]
         waitForBgsave r
 
         # Hash table should rehash since there is no child process,
-        # size is power of two and over 4096, so it is 8192
+        # so the resize limit is restored.
         wait_for_condition 50 100 {
-            [string match "*table size: 8192*" [r debug HTSTATS 9]]
+            [main_hash_table_size] > $table_size
         } else {
             fail "hash table did not rehash after child process killed"
         }
@@ -429,14 +480,14 @@ start_server {tags {"other external:skip"}} {
 }
 
 start_cluster 1 0 {tags {"other external:skip cluster slow"}} {
-    r config set dynamic-hz no hz 500
-    test "Redis can trigger resizing" {
+    r config set hz 500
+    test "Server can trigger resizing" {
         r flushall
         # hashslot(foo) is 12182
         for {set j 1} {$j <= 128} {incr j} {
             r set "{foo}$j" a
         }
-        assert_match "*table size: 128*" [r debug HTSTATS 0]
+        set table_size [main_hash_table_size]
 
         # disable resizing, the reason for not using slow bgsave is because
         # it will hit the dict_force_resize_ratio.
@@ -446,27 +497,28 @@ start_cluster 1 0 {tags {"other external:skip cluster slow"}} {
         for {set j 1} {$j <= 123} {incr j} {
             r del "{foo}$j"
         }
-        assert_match "*table size: 128*" [r debug HTSTATS 0]
+        assert_equal $table_size [main_hash_table_size]
 
         # enable resizing
         r debug dict-resizing 1
 
         # waiting for serverCron to resize the tables
         wait_for_condition 1000 10 {
-            [string match {*table size: 8*} [r debug HTSTATS 0]]
+            [main_hash_table_size] < $table_size
         } else {
             puts [r debug HTSTATS 0]
             fail "hash tables weren't resize."
         }
     } {} {needs:debug}
 
-    test "Redis can rewind and trigger smaller slot resizing" {
+    test "Server can rewind and trigger smaller slot resizing" {
         # hashslot(foo) is 12182
         # hashslot(alice) is 749, smaller than hashslot(foo),
         # attempt to trigger a resize on it, see details in #12802.
         for {set j 1} {$j <= 128} {incr j} {
             r set "{alice}$j" a
         }
+        set table_size [main_hash_table_size]
 
         # disable resizing, the reason for not using slow bgsave is because
         # it will hit the dict_force_resize_ratio.
@@ -481,7 +533,7 @@ start_cluster 1 0 {tags {"other external:skip cluster slow"}} {
 
         # waiting for serverCron to resize the tables
         wait_for_condition 1000 10 {
-            [string match {*table size: 16*} [r debug HTSTATS 0]]
+            [main_hash_table_size] < $table_size
         } else {
             puts [r debug HTSTATS 0]
             fail "hash tables weren't resize."
@@ -490,7 +542,7 @@ start_cluster 1 0 {tags {"other external:skip cluster slow"}} {
 }
 
 start_server {tags {"other external:skip"}} {
-    test "Redis can resize empty dict" {
+    test "Server can resize empty dict" {
         # Write and then delete 128 keys, creating an empty dict
         r flushall
         for {set j 1} {$j <= 128} {incr j} {
@@ -501,10 +553,35 @@ start_server {tags {"other external:skip"}} {
         }
         # The dict containing 128 keys must have expanded,
         # its hash table itself takes a lot more than 400 bytes
+        set dbnum [expr {$::singledb ? 0 : 9}]
         wait_for_condition 100 50 {
-            [dict get [r memory stats] db.9 overhead.hashtable.main] < 400
+            [dict get [r memory stats] db.$dbnum overhead.hashtable.main] < 400
         } else {
             fail "dict did not resize in time"
         }   
     }
 }
+
+set tempFileName [file join [pwd] [pid]]
+if {$::verbose} {
+    puts "Creating temp file $tempFileName"
+}
+set tempFileId [open $tempFileName w]
+set group [dict get [file attributes $tempFileName] -group]
+if {$group != ""} {
+    set escaped_group "\"[string map {"\\" "\\\\"} $group]\""
+    start_server [list tags {"repl external:skip"} overrides [list unixsocketgroup $escaped_group unixsocketperm 744]] {
+        test {test unixsocket options are set correctly} {
+            set socketpath [lindex [r config get unixsocket] 1]
+            set attributes [file attributes $socketpath]
+            set permissions [string range [dict get $attributes -permissions] end-2 end]
+            assert_equal [dict get $attributes -group] $group
+            assert_equal 744 $permissions
+        }
+    }
+}
+if {$::verbose} {
+    puts "Deleting temp file: $tempFileName"
+}
+close $tempFileId
+file delete $tempFileName

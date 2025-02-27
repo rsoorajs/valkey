@@ -58,12 +58,15 @@ TEST_MODULES = \
     eventloop.so \
     moduleconfigs.so \
     moduleconfigstwo.so \
+    moduleparameter.so \
     publish.so \
     usercall.so \
     postnotifications.so \
     moduleauthtwo.so \
     rdbloadsave.so \
-    crash.so
+    crash.so \
+    cluster.so \
+    helloscripting.so
 
 .PHONY: all
 
@@ -72,7 +75,7 @@ all: $(TEST_MODULES)
 32bit:
 	$(MAKE) CFLAGS="-m32" LDFLAGS="-m32"
 
-%.xo: %.c ../../src/redismodule.h
+%.xo: %.c ../../src/valkeymodule.h
 	$(CC) -I../../src $(CFLAGS) $(SHOBJ_CFLAGS) -fPIC -c $< -o $@
 
 %.so: %.xo
