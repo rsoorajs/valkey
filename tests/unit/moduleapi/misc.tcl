@@ -20,7 +20,7 @@ start_server {overrides {save {900 1}} tags {"modules"}} {
         assert { [string match "*cmdstat_module*" $info] }
     }
 
-    test {test redis version} {
+    test {test valkey version} {
         assert_equal [s valkey_version] [r test.serverversion]
     }
 
@@ -45,7 +45,7 @@ start_server {overrides {save {900 1}} tags {"modules"}} {
 
     test {test RedisModule_ResetDataset do not reset functions} {
         r function load {#!lua name=lib
-            redis.register_function('test', function() return 1 end)
+            server.register_function('test', function() return 1 end)
         }
         assert_equal [r function list] {{library_name lib engine LUA functions {{name test description {} flags {}}}}}
         r test.flushall

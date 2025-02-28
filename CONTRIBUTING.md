@@ -3,6 +3,10 @@ Contributing to Valkey
 
 Welcome and thank you for wanting to contribute!
 
+# Project governance
+
+The Valkey project is led by a Technical Steering Committee, whose responsibilities are laid out in [GOVERNANCE.md](GOVERNANCE.md).
+
 ## Get started
 
 * Have a question? Ask it on
@@ -75,10 +79,9 @@ you need to ensure that the contribution is in accordance with the DCO.
 
 1. If it is a major feature or a semantical change, please don't start coding
 straight away: if your feature is not a conceptual fit you'll lose a lot of
-time writing the code without any reason. Start by posting in the mailing list
-and creating an issue at Github with the description of, exactly, what you want
-to accomplish and why. Use cases are important for features to be accepted.
-Here you can see if there is consensus about your idea.
+time writing the code without any reason. Start by creating an issue at Github with the
+description of, exactly, what you want to accomplish and why. Use cases are important for
+features to be accepted. Here you can see if there is consensus about your idea.
 
 2. If in step 1 you get an acknowledgment from the project leaders, use the following
 procedure to submit a patch:

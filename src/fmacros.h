@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2012, Salvatore Sanfilippo <antirez at gmail dot com>
+ * Copyright (c) 2009-2012, Redis Ltd.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -34,7 +34,14 @@
 
 #if defined(__linux__)
 #define _GNU_SOURCE
+/*
+ * This macro might have already been defined by including <features.h>, which
+ * is transitively included by <sys/types.h>. Therefore, to avoid redefinition
+ * build warnings, we check if the macro is already defined.
+ */
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 #endif
 
 #if defined(_AIX)
@@ -63,9 +70,12 @@
  * NOTE: We do not use the poison pragma since it
  * will error on stdlib definitions in files as well*/
 #if (__GNUC__ && __GNUC__ >= 4) && !defined __APPLE__
-int sprintf(char *str, const char *format, ...) __attribute__((deprecated("please avoid use of unsafe C functions. prefer use of snprintf instead")));
-char *strcpy(char *restrict dest, const char *src) __attribute__((deprecated("please avoid use of unsafe C functions. prefer use of valkey_strlcpy instead")));
-char *strcat(char *restrict dest, const char *restrict src) __attribute__((deprecated("please avoid use of unsafe C functions. prefer use of redis_strlcat instead")));
+int sprintf(char *str, const char *format, ...)
+    __attribute__((deprecated("please avoid use of unsafe C functions. prefer use of snprintf instead")));
+char *strcpy(char *restrict dest, const char *src)
+    __attribute__((deprecated("please avoid use of unsafe C functions. prefer use of valkey_strlcpy instead")));
+char *strcat(char *restrict dest, const char *restrict src)
+    __attribute__((deprecated("please avoid use of unsafe C functions. prefer use of valkey_strlcat instead")));
 #endif
 
 #ifdef __linux__

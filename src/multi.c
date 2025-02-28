@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2012, Salvatore Sanfilippo <antirez at gmail dot com>
+ * Copyright (c) 2009-2012, Redis Ltd.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -33,27 +33,42 @@
 
 /* Client state initialization for MULTI/EXEC */
 void initClientMultiState(client *c) {
-    c->mstate.commands = NULL;
-    c->mstate.count = 0;
-    c->mstate.cmd_flags = 0;
-    c->mstate.cmd_inv_flags = 0;
-    c->mstate.argv_len_sums = 0;
-    c->mstate.alloc_count = 0;
+    if (c->mstate) return;
+    c->mstate = zcalloc(sizeof(multiState));
+}
+
+void freeClientMultiStateCmds(client *c) {
+    for (int j = 0; j < c->mstate->count; j++) {
+        int i;
+        multiCmd *mc = c->mstate->commands + j;
+
+        for (i = 0; i < mc->argc; i++) decrRefCount(mc->argv[i]);
+        zfree(mc->argv);
+    }
+
+    zfree(c->mstate->commands);
+    c->mstate->commands = NULL;
 }
 
 /* Release all the resources associated with MULTI/EXEC state */
 void freeClientMultiState(client *c) {
-    int j;
+    if (!c->mstate) return;
 
-    for (j = 0; j < c->mstate.count; j++) {
-        int i;
-        multiCmd *mc = c->mstate.commands+j;
+    freeClientMultiStateCmds(c);
+    unwatchAllKeys(c);
+    zfree(c->mstate);
+    c->mstate = NULL;
+}
 
-        for (i = 0; i < mc->argc; i++)
-            decrRefCount(mc->argv[i]);
-        zfree(mc->argv);
-    }
-    zfree(c->mstate.commands);
+void resetClientMultiState(client *c) {
+    if (!c->mstate || !c->mstate->commands) return;
+
+    freeClientMultiStateCmds(c);
+    c->mstate->count = 0;
+    c->mstate->cmd_flags = 0;
+    c->mstate->cmd_inv_flags = 0;
+    c->mstate->argv_len_sums = 0;
+    c->mstate->alloc_count = 0;
 }
 
 /* Add a new command into the MULTI commands queue */
@@ -64,28 +79,28 @@ void queueMultiCommand(client *c, uint64_t cmd_flags) {
      * this is useful in case client sends these in a pipeline, or doesn't
      * bother to read previous responses and didn't notice the multi was already
      * aborted. */
-    if (c->flags & (CLIENT_DIRTY_CAS|CLIENT_DIRTY_EXEC))
-        return;
-    if (c->mstate.count == 0) {
+    if (c->flag.dirty_cas || c->flag.dirty_exec) return;
+    if (!c->mstate) initClientMultiState(c);
+    if (c->mstate->count == 0) {
         /* If a client is using multi/exec, assuming it is used to execute at least
          * two commands. Hence, creating by default size of 2. */
-        c->mstate.commands = zmalloc(sizeof(multiCmd)*2);
-        c->mstate.alloc_count = 2;
+        c->mstate->commands = zmalloc(sizeof(multiCmd) * 2);
+        c->mstate->alloc_count = 2;
     }
-    if (c->mstate.count == c->mstate.alloc_count) {
-        c->mstate.alloc_count = c->mstate.alloc_count < INT_MAX/2 ? c->mstate.alloc_count*2 : INT_MAX;
-        c->mstate.commands = zrealloc(c->mstate.commands, sizeof(multiCmd)*(c->mstate.alloc_count));
+    if (c->mstate->count == c->mstate->alloc_count) {
+        c->mstate->alloc_count = c->mstate->alloc_count < INT_MAX / 2 ? c->mstate->alloc_count * 2 : INT_MAX;
+        c->mstate->commands = zrealloc(c->mstate->commands, sizeof(multiCmd) * (c->mstate->alloc_count));
     }
-    mc = c->mstate.commands+c->mstate.count;
+    mc = c->mstate->commands + c->mstate->count;
     mc->cmd = c->cmd;
     mc->argc = c->argc;
     mc->argv = c->argv;
     mc->argv_len = c->argv_len;
 
-    c->mstate.count++;
-    c->mstate.cmd_flags |= cmd_flags;
-    c->mstate.cmd_inv_flags |= ~cmd_flags;
-    c->mstate.argv_len_sums += c->argv_len_sum + sizeof(robj*)*c->argc;
+    c->mstate->count++;
+    c->mstate->cmd_flags |= cmd_flags;
+    c->mstate->cmd_inv_flags |= ~cmd_flags;
+    c->mstate->argv_len_sums += c->argv_len_sum + sizeof(robj *) * c->argc;
 
     /* Reset the client's args since we copied them into the mstate and shouldn't
      * reference them from c anymore. */
@@ -96,36 +111,35 @@ void queueMultiCommand(client *c, uint64_t cmd_flags) {
 }
 
 void discardTransaction(client *c) {
-    freeClientMultiState(c);
-    initClientMultiState(c);
-    c->flags &= ~(CLIENT_MULTI|CLIENT_DIRTY_CAS|CLIENT_DIRTY_EXEC);
+    resetClientMultiState(c);
+    c->flag.multi = 0;
+    c->flag.dirty_cas = 0;
+    c->flag.dirty_exec = 0;
     unwatchAllKeys(c);
 }
 
 /* Flag the transaction as DIRTY_EXEC so that EXEC will fail.
  * Should be called every time there is an error while queueing a command. */
 void flagTransaction(client *c) {
-    if (c->flags & CLIENT_MULTI)
-        c->flags |= CLIENT_DIRTY_EXEC;
+    if (c->flag.multi) {
+        c->flag.dirty_exec = 1;
+        resetClientMultiState(c);
+    }
 }
 
 void multiCommand(client *c) {
-    if (c->flags & CLIENT_MULTI) {
-        addReplyError(c,"MULTI calls can not be nested");
-        return;
-    }
-    c->flags |= CLIENT_MULTI;
-
-    addReply(c,shared.ok);
+    if (!c->mstate) initClientMultiState(c);
+    c->flag.multi = 1;
+    addReply(c, shared.ok);
 }
 
 void discardCommand(client *c) {
-    if (!(c->flags & CLIENT_MULTI)) {
-        addReplyError(c,"DISCARD without MULTI");
+    if (!c->flag.multi) {
+        addReplyError(c, "DISCARD without MULTI");
         return;
     }
     discardTransaction(c);
-    addReply(c,shared.ok);
+    addReply(c, shared.ok);
 }
 
 /* Aborts a transaction, with a specific error message.
@@ -142,7 +156,7 @@ void execCommandAbort(client *c, sds error) {
     /* Send EXEC to clients waiting data from MONITOR. We did send a MULTI
      * already, and didn't send any of the queued commands, now we'll just send
      * EXEC so it is clear that the transaction is over. */
-    replicationFeedMonitors(c,server.monitors,c->db->id,c->argv,c->argc);
+    replicationFeedMonitors(c, server.monitors, c->db->id, c->argv, c->argc);
 }
 
 void execCommand(client *c) {
@@ -151,14 +165,14 @@ void execCommand(client *c) {
     int orig_argc, orig_argv_len;
     struct serverCommand *orig_cmd;
 
-    if (!(c->flags & CLIENT_MULTI)) {
-        addReplyError(c,"EXEC without MULTI");
+    if (!c->flag.multi) {
+        addReplyError(c, "EXEC without MULTI");
         return;
     }
 
     /* EXEC with expired watched key is disallowed*/
     if (isWatchedKeyExpired(c)) {
-        c->flags |= (CLIENT_DIRTY_CAS);
+        c->flag.dirty_cas = 1;
     }
 
     /* Check if we need to abort the EXEC because:
@@ -167,8 +181,8 @@ void execCommand(client *c) {
      * A failed EXEC in the first case returns a multi bulk nil object
      * (technically it is not an error but a special behavior), while
      * in the second an EXECABORT error is returned. */
-    if (c->flags & (CLIENT_DIRTY_CAS | CLIENT_DIRTY_EXEC)) {
-        if (c->flags & CLIENT_DIRTY_EXEC) {
+    if (c->flag.dirty_cas || c->flag.dirty_exec) {
+        if (c->flag.dirty_exec) {
             addReplyErrorObject(c, shared.execaborterr);
         } else {
             addReply(c, shared.nullarray[c->resp]);
@@ -178,10 +192,10 @@ void execCommand(client *c) {
         return;
     }
 
-    uint64_t old_flags = c->flags;
+    struct ClientFlags old_flags = c->flag;
 
     /* we do not want to allow blocking commands inside multi */
-    c->flags |= CLIENT_DENY_BLOCKING;
+    c->flag.deny_blocking = 1;
 
     /* Exec all the queued commands */
     unwatchAllKeys(c); /* Unwatch ASAP otherwise we'll waste CPU cycles */
@@ -192,59 +206,57 @@ void execCommand(client *c) {
     orig_argv_len = c->argv_len;
     orig_argc = c->argc;
     orig_cmd = c->cmd;
-    addReplyArrayLen(c,c->mstate.count);
-    for (j = 0; j < c->mstate.count; j++) {
-        c->argc = c->mstate.commands[j].argc;
-        c->argv = c->mstate.commands[j].argv;
-        c->argv_len = c->mstate.commands[j].argv_len;
-        c->cmd = c->realcmd = c->mstate.commands[j].cmd;
+    addReplyArrayLen(c, c->mstate->count);
+    for (j = 0; j < c->mstate->count; j++) {
+        c->argc = c->mstate->commands[j].argc;
+        c->argv = c->mstate->commands[j].argv;
+        c->argv_len = c->mstate->commands[j].argv_len;
+        c->cmd = c->realcmd = c->mstate->commands[j].cmd;
 
         /* ACL permissions are also checked at the time of execution in case
          * they were changed after the commands were queued. */
         int acl_errpos;
-        int acl_retval = ACLCheckAllPerm(c,&acl_errpos);
+        int acl_retval = ACLCheckAllPerm(c, &acl_errpos);
         if (acl_retval != ACL_OK) {
             char *reason;
             switch (acl_retval) {
-            case ACL_DENIED_CMD:
-                reason = "no permission to execute the command or subcommand";
-                break;
-            case ACL_DENIED_KEY:
-                reason = "no permission to touch the specified keys";
-                break;
+            case ACL_DENIED_CMD: reason = "no permission to execute the command or subcommand"; break;
+            case ACL_DENIED_KEY: reason = "no permission to touch the specified keys"; break;
             case ACL_DENIED_CHANNEL:
                 reason = "no permission to access one of the channels used "
                          "as arguments";
                 break;
-            default:
-                reason = "no permission";
-                break;
+            default: reason = "no permission"; break;
             }
-            addACLLogEntry(c,acl_retval,ACL_LOG_CTX_MULTI,acl_errpos,NULL,NULL);
+            addACLLogEntry(c, acl_retval, ACL_LOG_CTX_MULTI, acl_errpos, NULL, NULL);
             addReplyErrorFormat(c,
-                "-NOPERM ACLs rules changed between the moment the "
-                "transaction was accumulated and the EXEC call. "
-                "This command is no longer allowed for the "
-                "following reason: %s", reason);
+                                "-NOPERM ACLs rules changed between the moment the "
+                                "transaction was accumulated and the EXEC call. "
+                                "This command is no longer allowed for the "
+                                "following reason: %s",
+                                reason);
         } else {
             if (c->id == CLIENT_ID_AOF)
-                call(c,CMD_CALL_NONE);
+                call(c, CMD_CALL_NONE);
             else
-                call(c,CMD_CALL_FULL);
+                call(c, CMD_CALL_FULL);
 
-            serverAssert((c->flags & CLIENT_BLOCKED) == 0);
+            serverAssert(c->flag.blocked == 0);
         }
 
         /* Commands may alter argc/argv, restore mstate. */
-        c->mstate.commands[j].argc = c->argc;
-        c->mstate.commands[j].argv = c->argv;
-        c->mstate.commands[j].argv_len = c->argv_len;
-        c->mstate.commands[j].cmd = c->cmd;
+        c->mstate->commands[j].argc = c->argc;
+        c->mstate->commands[j].argv = c->argv;
+        c->mstate->commands[j].argv_len = c->argv_len;
+        c->mstate->commands[j].cmd = c->cmd;
+
+        /* The original argv has already been processed for commandlog and monitor,
+         * so we can safely free it before proceeding to the next command. */
+        freeClientOriginalArgv(c);
     }
 
     // restore old DENY_BLOCKING value
-    if (!(old_flags & CLIENT_DENY_BLOCKING))
-        c->flags &= ~CLIENT_DENY_BLOCKING;
+    if (!(old_flags.deny_blocking)) c->flag.deny_blocking = 0;
 
     c->argv = orig_argv;
     c->argv_len = orig_argv_len;
@@ -276,12 +288,12 @@ typedef struct watchedKey {
     robj *key;
     serverDb *db;
     client *client;
-    unsigned expired:1; /* Flag that we're watching an already expired key. */
+    unsigned expired : 1; /* Flag that we're watching an already expired key. */
 } watchedKey;
 
 /* Attach a watchedKey to the list of clients watching that key. */
 static inline void watchedKeyLinkToClients(list *clients, watchedKey *wk) {
-    wk->node.value = clients; /* Point the value back to the list */
+    wk->node.value = clients;             /* Point the value back to the list */
     listLinkNodeTail(clients, &wk->node); /* Link the embedded node */
 }
 
@@ -303,20 +315,19 @@ void watchForKey(client *c, robj *key) {
     listNode *ln;
     watchedKey *wk;
 
-    if (listLength(c->watched_keys) == 0) server.watching_clients++;
+    if (listLength(&c->mstate->watched_keys) == 0) server.watching_clients++;
 
     /* Check if we are already watching for this key */
-    listRewind(c->watched_keys,&li);
-    while((ln = listNext(&li))) {
+    listRewind(&c->mstate->watched_keys, &li);
+    while ((ln = listNext(&li))) {
         wk = listNodeValue(ln);
-        if (wk->db == c->db && equalStringObjects(key,wk->key))
-            return; /* Key already watched */
+        if (wk->db == c->db && equalStringObjects(key, wk->key)) return; /* Key already watched */
     }
     /* This key is not already watched in this DB. Let's add it */
-    clients = dictFetchValue(c->db->watched_keys,key);
+    clients = dictFetchValue(c->db->watched_keys, key);
     if (!clients) {
         clients = listCreate();
-        dictAdd(c->db->watched_keys,key,clients);
+        dictAdd(c->db->watched_keys, key, clients);
         incrRefCount(key);
     }
     /* Add the new key to the list of keys watched by this client */
@@ -326,7 +337,7 @@ void watchForKey(client *c, robj *key) {
     wk->db = c->db;
     wk->expired = keyIsExpired(c->db, key);
     incrRefCount(key);
-    listAddNodeTail(c->watched_keys, wk);
+    listAddNodeTail(&c->mstate->watched_keys, wk);
     watchedKeyLinkToClients(clients, wk);
 }
 
@@ -336,22 +347,21 @@ void unwatchAllKeys(client *c) {
     listIter li;
     listNode *ln;
 
-    if (listLength(c->watched_keys) == 0) return;
-    listRewind(c->watched_keys,&li);
-    while((ln = listNext(&li))) {
+    if (!c->mstate || listLength(&c->mstate->watched_keys) == 0) return;
+    listRewind(&c->mstate->watched_keys, &li);
+    while ((ln = listNext(&li))) {
         list *clients;
         watchedKey *wk;
 
         /* Remove the client's wk from the list of clients watching the key. */
         wk = listNodeValue(ln);
         clients = watchedKeyGetClients(wk);
-        serverAssertWithInfo(c,NULL,clients != NULL);
+        serverAssertWithInfo(c, NULL, clients != NULL);
         listUnlinkNode(clients, watchedKeyGetClientNode(wk));
         /* Kill the entry at all if this was the only client */
-        if (listLength(clients) == 0)
-            dictDelete(wk->db->watched_keys, wk->key);
+        if (listLength(clients) == 0) dictDelete(wk->db->watched_keys, wk->key);
         /* Remove this watched key from the client->watched list */
-        listDelNode(c->watched_keys,ln);
+        listDelNode(&c->mstate->watched_keys, ln);
         decrRefCount(wk->key);
         zfree(wk);
     }
@@ -364,8 +374,8 @@ int isWatchedKeyExpired(client *c) {
     listIter li;
     listNode *ln;
     watchedKey *wk;
-    if (listLength(c->watched_keys) == 0) return 0;
-    listRewind(c->watched_keys,&li);
+    if (!c->mstate || listLength(&c->mstate->watched_keys) == 0) return 0;
+    listRewind(&c->mstate->watched_keys, &li);
     while ((ln = listNext(&li))) {
         wk = listNodeValue(ln);
         if (wk->expired) continue; /* was expired when WATCH was called */
@@ -388,17 +398,14 @@ void touchWatchedKey(serverDb *db, robj *key) {
 
     /* Mark all the clients watching this key as CLIENT_DIRTY_CAS */
     /* Check if we are already watching for this key */
-    listRewind(clients,&li);
-    while((ln = listNext(&li))) {
+    listRewind(clients, &li);
+    while ((ln = listNext(&li))) {
         watchedKey *wk = server_member2struct(watchedKey, node, ln);
         client *c = wk->client;
 
         if (wk->expired) {
             /* The key was already expired when WATCH was called. */
-            if (db == wk->db &&
-                equalStringObjects(key, wk->key) &&
-                dbFind(db, key->ptr) == NULL)
-            {
+            if (db == wk->db && equalStringObjects(key, wk->key) && dbFind(db, key->ptr) == NULL) {
                 /* Already expired key is deleted, so logically no change. Clear
                  * the flag. Deleted keys are not flagged as expired. */
                 wk->expired = 0;
@@ -407,7 +414,8 @@ void touchWatchedKey(serverDb *db, robj *key) {
             break;
         }
 
-        c->flags |= CLIENT_DIRTY_CAS;
+        c->flag.dirty_cas = 1;
+        resetClientMultiState(c);
         /* As the client is marked as dirty, there is no point in getting here
          * again in case that key (or others) are modified again (or keep the
          * memory overhead till EXEC). */
@@ -433,16 +441,14 @@ void touchAllWatchedKeysInDb(serverDb *emptied, serverDb *replaced_with) {
     if (dictSize(emptied->watched_keys) == 0) return;
 
     dictIterator *di = dictGetSafeIterator(emptied->watched_keys);
-    while((de = dictNext(di)) != NULL) {
+    while ((de = dictNext(di)) != NULL) {
         robj *key = dictGetKey(de);
         int exists_in_emptied = dbFind(emptied, key->ptr) != NULL;
-        if (exists_in_emptied ||
-            (replaced_with && dbFind(replaced_with, key->ptr) != NULL))
-        {
+        if (exists_in_emptied || (replaced_with && dbFind(replaced_with, key->ptr) != NULL)) {
             list *clients = dictGetVal(de);
             if (!clients) continue;
-            listRewind(clients,&li);
-            while((ln = listNext(&li))) {
+            listRewind(clients, &li);
+            while ((ln = listNext(&li))) {
                 watchedKey *wk = server_member2struct(watchedKey, node, ln);
                 if (wk->expired) {
                     if (!replaced_with || !dbFind(replaced_with, key->ptr)) {
@@ -460,7 +466,8 @@ void touchAllWatchedKeysInDb(serverDb *emptied, serverDb *replaced_with) {
                     continue;
                 }
                 client *c = wk->client;
-                c->flags |= CLIENT_DIRTY_CAS;
+                c->flag.dirty_cas = 1;
+                resetClientMultiState(c);
                 /* Note - we could potentially call unwatchAllKeys for this specific client in order to reduce
                  * the total number of iterations. BUT this could also free the current next entry pointer
                  * held by the iterator and can lead to use-after-free. */
@@ -473,31 +480,31 @@ void touchAllWatchedKeysInDb(serverDb *emptied, serverDb *replaced_with) {
 void watchCommand(client *c) {
     int j;
 
-    if (c->flags & CLIENT_MULTI) {
-        addReplyError(c,"WATCH inside MULTI is not allowed");
-        return;
-    }
     /* No point in watching if the client is already dirty. */
-    if (c->flags & CLIENT_DIRTY_CAS) {
-        addReply(c,shared.ok);
+    if (c->flag.dirty_cas) {
+        addReply(c, shared.ok);
         return;
     }
-    for (j = 1; j < c->argc; j++)
-        watchForKey(c,c->argv[j]);
-    addReply(c,shared.ok);
+
+    if (!c->mstate) initClientMultiState(c);
+
+    for (j = 1; j < c->argc; j++) watchForKey(c, c->argv[j]);
+    addReply(c, shared.ok);
 }
 
 void unwatchCommand(client *c) {
     unwatchAllKeys(c);
-    c->flags &= (~CLIENT_DIRTY_CAS);
-    addReply(c,shared.ok);
+    c->flag.dirty_cas = 0;
+    addReply(c, shared.ok);
 }
 
 size_t multiStateMemOverhead(client *c) {
-    size_t mem = c->mstate.argv_len_sums;
-    /* Add watched keys overhead, Note: this doesn't take into account the watched keys themselves, because they aren't managed per-client. */
-    mem += listLength(c->watched_keys) * (sizeof(listNode) + sizeof(watchedKey));
+    if (!c->mstate) return 0;
+    size_t mem = c->mstate->argv_len_sums;
+    /* Add watched keys overhead, Note: this doesn't take into account the watched keys themselves, because they aren't
+     * managed per-client. */
+    mem += listLength(&c->mstate->watched_keys) * (sizeof(listNode) + sizeof(c->mstate->watched_keys));
     /* Reserved memory for queued multi commands. */
-    mem += c->mstate.alloc_count * sizeof(multiCmd);
+    mem += c->mstate->alloc_count * sizeof(multiCmd);
     return mem;
 }

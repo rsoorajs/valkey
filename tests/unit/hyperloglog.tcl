@@ -146,7 +146,7 @@ start_server {tags {"hll"}} {
         set e
     } {*WRONGTYPE*}
 
-    test {Fuzzing dense/sparse encoding: Redis should always detect errors} {
+    test {Fuzzing dense/sparse encoding: Server should always detect errors} {
         for {set j 0} {$j < 1000} {incr j} {
             r del hll
             set items {}
@@ -221,6 +221,46 @@ start_server {tags {"hll"}} {
         assert_equal 1 [r exists destkey]
         assert_equal 3 [r pfcount destkey]
     }
+
+    test {PFMERGE results with simd} {
+        r del hllscalar{t} hllsimd{t} hll1{t} hll2{t} hll3{t}
+        for {set x 1} {$x < 2000} {incr x} {
+            r pfadd hll1{t} [expr rand()]
+        }
+        for {set x 1} {$x < 4000} {incr x} {
+            r pfadd hll2{t} [expr rand()]
+        }
+        for {set x 1} {$x < 8000} {incr x} {
+            r pfadd hll3{t} [expr rand()]
+        }
+        assert {[r pfcount hll1{t}] > 0}
+        assert {[r pfcount hll2{t}] > 0}
+        assert {[r pfcount hll3{t}] > 0}
+
+        r pfdebug simd off
+        set scalar [r pfcount hll1{t} hll2{t} hll3{t}]
+        r pfdebug simd on
+        set simd [r pfcount hll1{t} hll2{t} hll3{t}]
+        assert {$scalar > 0}
+        assert {$simd > 0}
+        assert_equal $scalar $simd
+
+        r pfdebug simd off
+        r pfmerge hllscalar{t} hll1{t} hll2{t} hll3{t}
+        r pfdebug simd on
+        r pfmerge hllsimd{t} hll1{t} hll2{t} hll3{t}
+
+        set scalar [r pfcount hllscalar{t}]
+        set simd [r pfcount hllsimd{t}]
+        assert {$scalar > 0}
+        assert {$simd > 0}
+        assert_equal $scalar $simd
+
+        set scalar [r get hllscalar{t}]
+        set simd [r get hllsimd{t}]
+        assert_equal $scalar $simd
+
+    } {} {needs:pfdebug}
 
     test {PFCOUNT multiple-keys merge returns cardinality of union #1} {
         r del hll1{t} hll2{t} hll3{t}
